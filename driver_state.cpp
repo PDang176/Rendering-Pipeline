@@ -6,6 +6,7 @@
 // Helper Functions
 float area(vec2 a, vec2 b, vec2 c);
 int get_index(int i, int j, int width);
+void call_vshader(driver_state& state, data_geometry * dg_arr);
 
 driver_state::driver_state()
 {
@@ -55,28 +56,44 @@ void render(driver_state& state, render_type type)
         dg_arr[i].data = new float[MAX_FLOATS_PER_VERTEX];
     }
 
-    // Call vertex_shader for each vertex
-    data_vertex dv;
-    for(int i = 0; i < state.num_vertices; i++){
-        // Create a data_vertex passing in the location of the first float in vertex_data for that data_vertex
-        dv.data = &state.vertex_data[i * state.floats_per_vertex];
-        state.vertex_shader(dv, dg_arr[i], state.uniform_data);
-    }
-
     switch(type){
         case render_type::triangle:
+            // Fill data_geometry array with vertex data
             for(int i = 0; i < state.num_vertices; i++){
                 dg_arr[i].data = &state.vertex_data[i * state.floats_per_vertex];
             }
+            // Call vertex_shader for each vertex
+            call_vshader(state, dg_arr);
+            // Run clip triangle for each set of 3 vertices
             for(int i = 0; i < state.num_vertices / 3; i++){
-                rasterize_triangle(state, dg_arr[3 * i], dg_arr[3 * i + 1], dg_arr[3 * i + 2]);
+                clip_triangle(state, dg_arr[3 * i], dg_arr[3 * i + 1], dg_arr[3 * i + 2], 0);
             }
             break;
 
         case render_type::indexed:
+            // // Fill data_geometry array with index data
+            // for(int i = 0; i < state.num_vertices; i++){
+            //     dg_arr[i].data = &state.vertex_data[state.index_data[i] * state.floats_per_vertex];
+            // }
+            // // Call vertex_shader for each vertex
+            // call_vshader(state, dg_arr);
+            // // Run clip triangle for each set of 3 vertices
+            // for(int i = 0; i < state.num_triangles; i++){
+            //     clip_triangle(state, dg_arr[3 * i], dg_arr[3 * i + 1], dg_arr[3 * i + 2], 0);
+            // }
             break;
 
         case render_type::fan:
+            // // Fill data_geometry array with vertex data
+            // for(int i = 0; i < state.num_vertices - 2; i++){
+            //     dg_arr[i].data = &state.vertex_data[i * state.floats_per_vertex];
+            // }
+            // // Call vertex_shader for each vertex
+            // call_vshader(state, dg_arr);
+            // // Run clip triangle for each set of 3 vertices
+            // for(int i = 0; i < state.num_vertices / 3; i++){
+            //     clip_triangle(state, dg_arr[3 * i], dg_arr[3 * i + 1], dg_arr[3 * i + 2], 0);
+            // }
             break;
 
         case render_type::strip:
@@ -105,7 +122,28 @@ void clip_triangle(driver_state& state, const data_geometry& v0,
         rasterize_triangle(state, v0, v1, v2);
         return;
     }
-    std::cout<<"TODO: implement clipping. (The current code passes the triangle through without clipping them.)"<<std::endl;
+
+    // Set is_positive to true if even face
+    bool is_positive = (face % 2 == 0);
+
+    int plane = face % 3;
+
+    // Check if vertices are inside or outside the clipping plane
+    bool is_inside[3];
+    if(is_positive){
+        is_inside[0] = v0.gl_Position[plane] <= v0.gl_Position[3];
+        is_inside[1] = v1.gl_Position[plane] <= v1.gl_Position[3];
+        is_inside[2] = v2.gl_Position[plane] <= v2.gl_Position[3];
+    }
+    else{
+        is_inside[0] = v0.gl_Position[plane] >= -v0.gl_Position[3];
+        is_inside[1] = v1.gl_Position[plane] >= -v1.gl_Position[3];
+        is_inside[2] = v2.gl_Position[plane] >= -v2.gl_Position[3];
+    }
+
+
+
+    // std::cout<<"TODO: implement clipping. (The current code passes the triangle through without clipping them.)"<<std::endl;
     clip_triangle(state, v0, v1, v2,face+1);
 }
 
@@ -212,4 +250,14 @@ float area(vec2 a, vec2 b, vec2 c){
 
 int get_index(int i, int j, int width){
     return (j * width) + i;
+}
+
+void call_vshader(driver_state& state, data_geometry * dg_arr){
+    data_vertex dv;
+    // Call vertex_shader for each vertex
+    for(int i = 0; i < state.num_vertices; i++){
+        // Create a data_vertex passing in the location of the first float in vertex_data for that data_vertex
+        dv.data = dg_arr[i].data;
+        state.vertex_shader(dv, dg_arr[i], state.uniform_data);
+    }
 }

@@ -73,6 +73,7 @@ void render(driver_state& state, render_type type)
             break;
 
         case render_type::indexed:
+            // Reallocate dg_arr such that its filled with state.num_triangles vertices
             delete[] dg_arr;
             dg_arr = new data_geometry[state.num_triangles * 3];
             // Allocate each data_geometry object's data array
@@ -83,7 +84,7 @@ void render(driver_state& state, render_type type)
             for(int i = 0; i < state.num_triangles * 3; i++){
                 dg_arr[i].data = &state.vertex_data[state.index_data[i] * state.floats_per_vertex];
             }
-            // Call vertex_shader for each vertex
+            // Call vertex_shader for each triangle
             call_vshaderi(state, dg_arr);
             // Run clip triangle for each triangle
             for(int i = 0; i < state.num_triangles; i++){
@@ -135,6 +136,7 @@ void render(driver_state& state, render_type type)
 void clip_triangle(driver_state& state, const data_geometry& v0,
     const data_geometry& v1, const data_geometry& v2,int face)
 {
+    // If face == 6 send to rasterize
     if(face==6)
     {
         rasterize_triangle(state, v0, v1, v2);
@@ -144,6 +146,7 @@ void clip_triangle(driver_state& state, const data_geometry& v0,
     // Set is_positive to true if even face
     bool is_positive = (face % 2 == 0);
 
+    // Increase plane after every 2 faces
     int plane = face / 2;
 
     // Check if vertices are inside or outside the clipping plane
@@ -241,23 +244,24 @@ void rasterize_triangle(driver_state& state, const data_geometry& v0,
     int min_y = std::max(std::min(std::min(y[0], y[1]), y[2]), 0.0f);
     int max_y = std::min(std::max(std::max(y[0], y[1]), y[2]), float(height));
 
-    // Calculate area of triangle
+    // Create 3 points representing the triangle
     vec2 p0{x[0], y[0]};
     vec2 p1{x[1], y[1]};
     vec2 p2{x[2], y[2]};
+    
+    // Calculate area of triangle
     float ABC = area(p0, p1, p2);
 
+    // Loop through the bounding box
     for(int i = min_x; i<= max_x; i++){
         for(int j = min_y; j <= max_y; j++){
-            float alpha, beta, gamma;
-
             // Current point
             vec2 p(i, j);
             
             // Calculating barycentric coordinates for the current point
-            alpha = area(p, p1, p2) / ABC;
-            beta = area(p0, p, p2) / ABC;
-            gamma = area(p0, p1, p) / ABC;
+            float alpha = area(p, p1, p2) / ABC;
+            float beta = area(p0, p, p2) / ABC;
+            float gamma = area(p0, p1, p) / ABC;
 
             // Inside triangle
             if(alpha >= 0 && beta >= 0 && gamma >= 0){
@@ -279,25 +283,30 @@ void rasterize_triangle(driver_state& state, const data_geometry& v0,
                     for(int k = 0; k < state.floats_per_vertex; k++){
                         switch(state.interp_rules[k]){
                             case interp_type::flat:
+                                // If flat set to the first index's data
                                 df.data[k] = v0.data[k];
                                 break;
                             case interp_type::smooth:
                             {
-                                float alpha_s = 0, beta_s = 0, gamma_s = 0, w = 0;
-                                w = (alpha / v0.gl_Position[3]) + (beta / v1.gl_Position[3]) + (gamma / v2.gl_Position[3]);
-                                alpha_s = alpha / (v0.gl_Position[3] * w);
-                                beta_s = beta / (v1.gl_Position[3] * w);
-                                gamma_s = gamma / (v2.gl_Position[3] * w);
+                                // Converting back to world space
+                                float w = (alpha / v0.gl_Position[3]) + (beta / v1.gl_Position[3]) + (gamma / v2.gl_Position[3]);
+                                float alpha_s = alpha / (v0.gl_Position[3] * w);
+                                float beta_s = beta / (v1.gl_Position[3] * w);
+                                float gamma_s = gamma / (v2.gl_Position[3] * w);
+                                
+                                // Interpolate the fragment at this location
                                 df.data[k] = (alpha_s * v0.data[k]) + (beta_s * v1.data[k]) + (gamma_s * v2.data[k]);
                                 break;
                             }
                             case interp_type::noperspective:
+                                // Interpolate the fragment at this location
                                 df.data[k] = (alpha * v0.data[k]) + (beta * v1.data[k]) + (gamma * v2.data[k]);
                                 break;
                             default:
                                 std::cerr << "Error: Invalid interp_rule" << std::endl;
                         }
                     }
+                    // Call fragment shader
                     state.fragment_shader(df, output, state.uniform_data);
 
                     // Set pixel to final color
@@ -310,14 +319,17 @@ void rasterize_triangle(driver_state& state, const data_geometry& v0,
     // std::cout<<"TODO: implement rasterization"<<std::endl;
 }
 
+// Calculates the area of the triangle given its vertices
 float area(vec2 a, vec2 b, vec2 c){
     return 0.5 * (((b[0] * c[1]) - (c[0] * b[1])) + ((c[0] * a[1]) - (a[0] * c[1])) + ((a[0] * b[1]) - (b[0] * a[1])));
 }
 
+// Return the index given the width and the 2d coordinates
 int get_index(int i, int j, int width){
     return (j * width) + i;
 }
 
+// Calls vertex_shader for each vertex
 void call_vshader(driver_state& state, data_geometry * dg_arr){
     data_vertex dv;
     // Call vertex_shader for each vertex
@@ -328,6 +340,7 @@ void call_vshader(driver_state& state, data_geometry * dg_arr){
     }
 }
 
+// Calls vertex_shader for indexed rendering
 void call_vshaderi(driver_state& state, data_geometry * dg_arr){
     data_vertex dv;
     // Call vertex_shader for each vertex
@@ -338,8 +351,11 @@ void call_vshaderi(driver_state& state, data_geometry * dg_arr){
     }
 }
 
+// Calculates the intersection point between the vertex in the triangle and the vertex outside of the triangle
 void intersection(driver_state& state, data_geometry& nv, const data_geometry& a, const data_geometry& b, int plane, bool is_positive){
     float alpha_s = 0, alpha_n = 0;
+
+    // Calculate smooth interpolation
     if(is_positive){
         alpha_s = (b.gl_Position[3] - b.gl_Position[plane]) / (a.gl_Position[plane] - a.gl_Position[3] + b.gl_Position[3] - b.gl_Position[plane]);
     }
@@ -347,8 +363,10 @@ void intersection(driver_state& state, data_geometry& nv, const data_geometry& a
         alpha_s = (-b.gl_Position[3] - b.gl_Position[plane]) / (a.gl_Position[plane] + a.gl_Position[3] - b.gl_Position[3] - b.gl_Position[plane]);
     }
 
+    // Set the new vertex position to intersection point between a and b
     nv.gl_Position = (alpha_s * a.gl_Position) + ((1 - alpha_s) * b.gl_Position);
 
+    // Calculate noperspective interpolation
     alpha_n = (alpha_s * a.gl_Position[3]) / ((alpha_s * a.gl_Position[3]) + ((1 - alpha_s) * b.gl_Position[3]));
 
     for(int i = 0; i < state.floats_per_vertex; i++){

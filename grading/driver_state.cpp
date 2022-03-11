@@ -7,6 +7,8 @@
 float area(vec2 a, vec2 b, vec2 c);
 int get_index(int i, int j, int width);
 void call_vshader(driver_state& state, data_geometry * dg_arr);
+void call_vshaderi(driver_state& state, data_geometry * dg_arr);
+void intersection(driver_state& state, data_geometry& nv, const data_geometry& a, const data_geometry& b, int plane, bool is_positive);
 
 driver_state::driver_state()
 {
@@ -48,7 +50,7 @@ void initialize_render(driver_state& state, int width, int height)
 //   render_type::strip -    The vertices are to be interpreted as a triangle strip.
 void render(driver_state& state, render_type type)
 {
-    // Allocate an array of data_geometry objects (one for each vertex)
+    // Allocate an array of data_geometry objects
     data_geometry * dg_arr = new data_geometry[state.num_vertices];
 
     // Allocate each data_geometry object's data array
@@ -71,13 +73,19 @@ void render(driver_state& state, render_type type)
             break;
 
         case render_type::indexed:
-            // Fill data_geometry array with index data
-            for(int i = 0; i < state.num_vertices; i++){
+            delete[] dg_arr;
+            dg_arr = new data_geometry[state.num_triangles * 3];
+            // Allocate each data_geometry object's data array
+            for(int i = 0; i < state.num_triangles * 3; i++){
+                dg_arr[i].data = new float[MAX_FLOATS_PER_VERTEX];
+            }
+            // Fill data_geometry array with vertex data
+            for(int i = 0; i < state.num_triangles * 3; i++){
                 dg_arr[i].data = &state.vertex_data[state.index_data[i] * state.floats_per_vertex];
             }
             // Call vertex_shader for each vertex
-            call_vshader(state, dg_arr);
-            // Run clip triangle for each set of 3 vertices
+            call_vshaderi(state, dg_arr);
+            // Run clip triangle for each triangle
             for(int i = 0; i < state.num_triangles; i++){
                 clip_triangle(state, dg_arr[3 * i], dg_arr[3 * i + 1], dg_arr[3 * i + 2], 0);
             }
@@ -90,13 +98,23 @@ void render(driver_state& state, render_type type)
             }
             // Call vertex_shader for each vertex
             call_vshader(state, dg_arr);
-            // Run clip triangle for each set of 3 vertices
-            for(int i = 0; i < (state.num_vertices / 3) - 2; i++){
-                clip_triangle(state, dg_arr[3 * i], dg_arr[3 * i + 1], dg_arr[3 * i + 2], 0);
+            // Run clip triangle for each triangle in fan shape
+            for(int i = 0; i < state.num_vertices - 2; i++){
+                clip_triangle(state, dg_arr[0], dg_arr[i + 1], dg_arr[i + 2], 0);
             }
             break;
 
         case render_type::strip:
+            // Fill data_geometry array with vertex data
+            for(int i = 0; i < state.num_vertices; i++){
+                dg_arr[i].data = &state.vertex_data[i * state.floats_per_vertex];
+            }
+            // Call vertex_shader for each vertex
+            call_vshader(state, dg_arr);
+            // Run clip triangle for each triangle in strip shape
+            for(int i = 0; i < state.num_vertices - 2; i++){
+                clip_triangle(state, dg_arr[i], dg_arr[i + 1], dg_arr[i + 2], 0);
+            }
             break;
 
         default:
@@ -123,10 +141,72 @@ void clip_triangle(driver_state& state, const data_geometry& v0,
         return;
     }
 
+    // Set is_positive to true if even face
+    bool is_positive = (face % 2 == 0);
 
+    int plane = face / 2;
+
+    // Check if vertices are inside or outside the clipping plane
+    bool is_inside[3];
+    if(is_positive){
+        is_inside[0] = v0.gl_Position[plane] <= v0.gl_Position[3];
+        is_inside[1] = v1.gl_Position[plane] <= v1.gl_Position[3];
+        is_inside[2] = v2.gl_Position[plane] <= v2.gl_Position[3];
+    }
+    else{
+        is_inside[0] = v0.gl_Position[plane] >= -v0.gl_Position[3];
+        is_inside[1] = v1.gl_Position[plane] >= -v1.gl_Position[3];
+        is_inside[2] = v2.gl_Position[plane] >= -v2.gl_Position[3];
+    }
+
+    // Set up creation of new vertices
+    data_geometry nv0;
+    data_geometry nv1;
+    nv0.data = new float[MAX_FLOATS_PER_VERTEX];
+    nv1.data = new float[MAX_FLOATS_PER_VERTEX];
+
+    // Run clip_triangle for all possible combinations of vertices inside of the plane
+    if(!is_inside[0] && !is_inside[1] && !is_inside[2]){ // 000
+        return;
+    }
+    else if(!is_inside[0] && !is_inside[1] && is_inside[2]){ // 001
+        intersection(state, nv0, v2, v0, plane, is_positive);
+        intersection(state, nv1, v2, v1, plane, is_positive);
+        clip_triangle(state, v2, nv0, nv1, face + 1);
+    }
+    else if(!is_inside[0] && is_inside[1] && !is_inside[2]){ // 010
+        intersection(state, nv0, v1, v0, plane, is_positive);
+        intersection(state, nv1, v1, v2, plane, is_positive);
+        clip_triangle(state, v1, nv1, nv0, face + 1);
+    }
+    else if(!is_inside[0] && is_inside[1] && is_inside[2]){ // 011
+        intersection(state, nv0, v1, v0, plane, is_positive);
+        intersection(state, nv1, v2, v0, plane, is_positive);
+        clip_triangle(state, v1, v2, nv0, face + 1);
+        clip_triangle(state, v2, nv1, nv0, face + 1);
+    }
+    else if(is_inside[0] && !is_inside[1] && !is_inside[2]){ // 100
+        intersection(state, nv0, v0, v1, plane, is_positive);
+        intersection(state, nv1, v0, v2, plane, is_positive);
+        clip_triangle(state, v0, nv0, nv1, face + 1);
+    }
+    else if(is_inside[0] && !is_inside[1] && is_inside[2]){ // 101
+        intersection(state, nv0, v2, v1, plane, is_positive);
+        intersection(state, nv1, v0, v1, plane, is_positive);
+        clip_triangle(state, v2, v0, nv0, face + 1);
+        clip_triangle(state, v0, nv1, nv0, face + 1);
+    }
+    else if(is_inside[0] && is_inside[1] && !is_inside[2]){ // 110
+        intersection(state, nv0, v0, v2, plane, is_positive);
+        intersection(state, nv1, v1, v2, plane, is_positive);
+        clip_triangle(state, v0, v1, nv0, face + 1);
+        clip_triangle(state, v1, nv1, nv0, face + 1);
+    }
+    else if(is_inside[0] && is_inside[1] && is_inside[2]){ // 111
+        clip_triangle(state, v0, v1, v2, face + 1);
+    }
 
     // std::cout<<"TODO: implement clipping. (The current code passes the triangle through without clipping them.)"<<std::endl;
-    clip_triangle(state, v0, v1, v2,face+1);
 }
 
 // Rasterize the triangle defined by the three vertices in the "in" array.  This
@@ -143,23 +223,23 @@ void rasterize_triangle(driver_state& state, const data_geometry& v0,
     float y[3];
     float z[3];
 
-    x[0] = ((width / 2.0) * v0.gl_Position[0] / v0.gl_Position[3]) + (width / 2.0) - 0.5;
-    y[0] = ((height / 2.0) * v0.gl_Position[1] / v0.gl_Position[3]) + (height / 2.0) - 0.5;
+    x[0] = ((width / 2.0f) * v0.gl_Position[0] / v0.gl_Position[3]) + (width / 2.0f) - 0.5f;
+    y[0] = ((height / 2.0f) * v0.gl_Position[1] / v0.gl_Position[3]) + (height / 2.0f) - 0.5f;
     z[0] = v0.gl_Position[2] / v0.gl_Position[3];
 
-    x[1] = ((width / 2.0) * v1.gl_Position[0] / v1.gl_Position[3]) + (width / 2.0) - 0.5;
-    y[1] = ((height / 2.0) * v1.gl_Position[1] / v1.gl_Position[3]) + (height / 2.0) - 0.5;
+    x[1] = ((width / 2.0f) * v1.gl_Position[0] / v1.gl_Position[3]) + (width / 2.0f) - 0.5f;
+    y[1] = ((height / 2.0f) * v1.gl_Position[1] / v1.gl_Position[3]) + (height / 2.0f) - 0.5f;
     z[1] = v1.gl_Position[2] / v1.gl_Position[3];
 
-    x[2] = ((width / 2.0) * v2.gl_Position[0] / v2.gl_Position[3]) + (width / 2.0) - 0.5;
-    y[2] = ((height / 2.0) * v2.gl_Position[1] / v2.gl_Position[3]) + (height / 2.0) - 0.5;
+    x[2] = ((width / 2.0f) * v2.gl_Position[0] / v2.gl_Position[3]) + (width / 2.0f) - 0.5f;
+    y[2] = ((height / 2.0f) * v2.gl_Position[1] / v2.gl_Position[3]) + (height / 2.0f) - 0.5f;
     z[2] = v2.gl_Position[2] / v2.gl_Position[3];
 
     // Calculate bounding box of the triangle
-    int min_x = std::min(std::min(x[0], x[1]), x[2]);
-    int max_x = std::max(std::max(x[0], x[1]), x[2]);
-    int min_y = std::min(std::min(y[0], y[1]), y[2]);
-    int max_y = std::max(std::max(y[0], y[1]), y[2]);
+    int min_x = std::max(std::min(std::min(x[0], x[1]), x[2]), 0.0f);
+    int max_x = std::min(std::max(std::max(x[0], x[1]), x[2]), float(width));
+    int min_y = std::max(std::min(std::min(y[0], y[1]), y[2]), 0.0f);
+    int max_y = std::min(std::max(std::max(y[0], y[1]), y[2]), float(height));
 
     // Calculate area of triangle
     vec2 p0{x[0], y[0]};
@@ -176,8 +256,8 @@ void rasterize_triangle(driver_state& state, const data_geometry& v0,
             
             // Calculating barycentric coordinates for the current point
             alpha = area(p, p1, p2) / ABC;
-            beta = area(p, p2, p0) / ABC;
-            gamma = area(p, p0, p1) / ABC;
+            beta = area(p0, p, p2) / ABC;
+            gamma = area(p0, p1, p) / ABC;
 
             // Inside triangle
             if(alpha >= 0 && beta >= 0 && gamma >= 0){
@@ -191,33 +271,37 @@ void rasterize_triangle(driver_state& state, const data_geometry& v0,
                     state.image_depth[index] = depth;
 
                     // Fragment Shading
-                    float* data = new float[MAX_FLOATS_PER_VERTEX];
                     data_fragment df;
                     data_output output;
+                    df.data = new float[MAX_FLOATS_PER_VERTEX];
 
                     // Loop through all floats in the current point
                     for(int k = 0; k < state.floats_per_vertex; k++){
                         switch(state.interp_rules[k]){
                             case interp_type::flat:
-                                data[k] = v0.data[k];
+                                df.data[k] = v0.data[k];
                                 break;
                             case interp_type::smooth:
+                            {
+                                float alpha_s = 0, beta_s = 0, gamma_s = 0, w = 0;
+                                w = (alpha / v0.gl_Position[3]) + (beta / v1.gl_Position[3]) + (gamma / v2.gl_Position[3]);
+                                alpha_s = alpha / (v0.gl_Position[3] * w);
+                                beta_s = beta / (v1.gl_Position[3] * w);
+                                gamma_s = gamma / (v2.gl_Position[3] * w);
+                                df.data[k] = (alpha_s * v0.data[k]) + (beta_s * v1.data[k]) + (gamma_s * v2.data[k]);
                                 break;
+                            }
                             case interp_type::noperspective:
-                                data[k] = (alpha * v0.data[k]) + (beta * v1.data[k]) + (gamma * v2.data[k]);
+                                df.data[k] = (alpha * v0.data[k]) + (beta * v1.data[k]) + (gamma * v2.data[k]);
                                 break;
                             default:
                                 std::cerr << "Error: Invalid interp_rule" << std::endl;
                         }
                     }
-                    df.data = data;
                     state.fragment_shader(df, output, state.uniform_data);
 
                     // Set pixel to final color
                     state.image_color[index] = make_pixel(output.output_color[0] * 255, output.output_color[1] * 255, output.output_color[2] * 255);
-
-                    // Deallocate data array
-                    delete[] data;
                 }
             }
         }
@@ -241,5 +325,45 @@ void call_vshader(driver_state& state, data_geometry * dg_arr){
         // Create a data_vertex passing in the location of the first float in vertex_data for that data_vertex
         dv.data = dg_arr[i].data;
         state.vertex_shader(dv, dg_arr[i], state.uniform_data);
+    }
+}
+
+void call_vshaderi(driver_state& state, data_geometry * dg_arr){
+    data_vertex dv;
+    // Call vertex_shader for each vertex
+    for(int i = 0; i < state.num_triangles * 3; i++){
+        // Create a data_vertex passing in the location of the first float in vertex_data for that data_vertex
+        dv.data = dg_arr[i].data;
+        state.vertex_shader(dv, dg_arr[i], state.uniform_data);
+    }
+}
+
+void intersection(driver_state& state, data_geometry& nv, const data_geometry& a, const data_geometry& b, int plane, bool is_positive){
+    float alpha_s = 0, alpha_n = 0;
+    if(is_positive){
+        alpha_s = (b.gl_Position[3] - b.gl_Position[plane]) / (a.gl_Position[plane] - a.gl_Position[3] + b.gl_Position[3] - b.gl_Position[plane]);
+    }
+    else{
+        alpha_s = (-b.gl_Position[3] - b.gl_Position[plane]) / (a.gl_Position[plane] + a.gl_Position[3] - b.gl_Position[3] - b.gl_Position[plane]);
+    }
+
+    nv.gl_Position = (alpha_s * a.gl_Position) + ((1 - alpha_s) * b.gl_Position);
+
+    alpha_n = (alpha_s * a.gl_Position[3]) / ((alpha_s * a.gl_Position[3]) + ((1 - alpha_s) * b.gl_Position[3]));
+
+    for(int i = 0; i < state.floats_per_vertex; i++){
+        switch(state.interp_rules[i]){
+            case interp_type::flat:
+                nv.data[i] = a.data[i];
+                break;
+            case interp_type::smooth:
+                nv.data[i] = (alpha_s * a.data[i]) + ((1 - alpha_s) * b.data[i]);
+                break;
+            case interp_type::noperspective:
+                nv.data[i] = (alpha_n * a.data[i]) + ((1 - alpha_n) * b.data[i]);
+                break;
+            default:
+                std::cerr << "Error: Invalid interp_rule" << std::endl;
+        }
     }
 }
